@@ -221,7 +221,7 @@ pub trait Optimizer {
             self.tik();
             trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
             trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
-            if likelihood < lk {
+            if likelihood <= lk {
                 count_not_increased += 1;
             } else {
                 count_not_increased = 0;
@@ -353,7 +353,7 @@ impl Optimizer for AdamOptimizer {
 }
 
 #[allow(dead_code)]
-struct MomentumOptimizer {
+pub struct MomentumOptimizer {
     dim: usize,
     loop_count: usize,
     lr: f64,
@@ -371,7 +371,6 @@ impl Optimizer for MomentumOptimizer {
     fn shuffle(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))]) {
         data.shuffle(&mut self.rng);
     }
-
     fn new(dim: usize) -> Self {
         Self {
             dim,
@@ -494,7 +493,7 @@ fn get_gradient(ds: &[&[f64]], w_data: f64, ws: &[f64], param: &[f64]) -> Vec<f6
     let mut grad = vec![0f64; param.len()];
     let param_sum: f64 = param.iter().sum();
     let sum_digam: f64 = digamma(param_sum);
-    let digam_diff: Vec<_> = param.iter().map(|&p| sum_digam - digamma(p)).collect();
+    let digam_diff: Vec<_> = param.iter().map(|&p| digamma(p) - sum_digam).collect();
     for (w, logprob) in ws.iter().zip(ds.iter()) {
         for ((grad, x), diff) in grad.iter_mut().zip(logprob.iter()).zip(&digam_diff) {
             *grad += w_data * w * (diff + x);
