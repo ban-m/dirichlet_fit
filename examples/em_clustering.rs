@@ -21,6 +21,10 @@ fn main() {
     let centers: Vec<_> = (0..2 * len)
         .map(|i| gen_post_dist(i / len, 2, false, &mut rng))
         .collect();
+    for (i, center) in centers.iter().enumerate() {
+        trace!("{}\t{}", i, vec2str(center));
+    }
+    // let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4);
     center_clustering(&centers, 2, &mut rng);
 }
 fn sum_and_normalize(xss: &[Vec<f64>]) -> Vec<f64> {
@@ -40,17 +44,18 @@ fn sum_and_normalize(xss: &[Vec<f64>]) -> Vec<f64> {
 fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
     let dir = rand_distr::Dirichlet::new(&vec![0.5f64; k]).unwrap();
     let mut weights: Vec<_> = centers.iter().map(|_| dir.sample(rng)).collect();
-    // let mut weights = vec![
-    //     vec![vec![0.01, 0.99]; centers.len() / 2],
-    //     vec![vec![0.99, 0.01]; centers.len() / 2],
-    // ]
-    // .concat();
+    for (ws, center) in weights.iter().zip(centers.iter()) {
+        trace!("DUMP\t{}\t{}", vec2str(center), vec2str(ws));
+    }
     let mut params: Vec<_> = (0..k)
         .map(|cl| {
             let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
             dirichlet_fit::fit_multiple(&[centers], &[(1f64, weights)])
         })
         .collect();
+    for param in params.iter() {
+        trace!("PARAM\t{}", vec2str(param));
+    }
     let mut fractions = sum_and_normalize(&weights);
     fn lk(centers: &[Vec<f64>], params: &[Vec<f64>], fractions: &[f64]) -> f64 {
         centers
@@ -84,13 +89,17 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
         fractions = sum_and_normalize(&weights);
         for (cl, param) in params.iter_mut().enumerate() {
             let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
-            let mut optim = dirichlet_fit::AdamOptimizer::new(param.len());
-            // let mut optim = dirichlet_fit::MomentumOptimizer::new(param.len());
+            // let mut optim = dirichlet_fit::AdamOptimizer::new(param.len());
+            let mut optim = dirichlet_fit::AdamOptimizer::with_learning_rate(param.len(), 0.001);
             let lk: f64 = centers
                 .iter()
                 .zip(weights.iter())
                 .map(|(c, w)| w * dirichlet_fit::dirichlet_log(c, param))
                 .sum();
+            for (w, center) in weights.iter().zip(centers.iter()) {
+                trace!("DUMP\t{}\t{:.2}\t{}", t, w, vec2str(center));
+            }
+            trace!("===============");
             *param = dirichlet_fit::fit_multiple_with(
                 &[centers],
                 &[(1f64, weights.clone())],

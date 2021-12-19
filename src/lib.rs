@@ -282,6 +282,11 @@ impl AdamOptimizer {
             rng: SeedableRng::seed_from_u64(seed),
         }
     }
+    pub fn with_learning_rate(dim: usize, learning_rate: f64) -> Self {
+        let mut opt = Self::new(dim);
+        opt.lr = learning_rate;
+        opt
+    }
 }
 
 impl Optimizer for AdamOptimizer {
