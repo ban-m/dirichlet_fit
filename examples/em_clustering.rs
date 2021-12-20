@@ -25,7 +25,16 @@ fn main() {
         trace!("{}\t{}", i, vec2str(center));
     }
     // let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4);
-    center_clustering(&centers, 2, &mut rng);
+    let (asn, lk) = (0..1)
+        .map(|_| center_clustering(&centers, 2, &mut rng))
+        .max_by(|x, y| x.1.partial_cmp(&(y.1)).unwrap())
+        .unwrap();
+    for (asn, center) in asn.iter().zip(centers.iter()) {
+        let center: Vec<_> = center.iter().map(|x| x.exp()).collect();
+        trace!("{}\t{}", vec2str(&center), vec2str(asn));
+    }
+
+    trace!("FINAL\t{}", lk)
 }
 fn sum_and_normalize(xss: &[Vec<f64>]) -> Vec<f64> {
     let mut sumed = vec![0f64; xss[0].len()];
@@ -41,16 +50,22 @@ fn sum_and_normalize(xss: &[Vec<f64>]) -> Vec<f64> {
     sumed
 }
 
-fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
+fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Vec<Vec<f64>>, f64) {
     let dir = rand_distr::Dirichlet::new(&vec![0.5f64; k]).unwrap();
     let mut weights: Vec<_> = centers.iter().map(|_| dir.sample(rng)).collect();
     for (ws, center) in weights.iter().zip(centers.iter()) {
         trace!("DUMP\t{}\t{}", vec2str(center), vec2str(ws));
     }
+    let norm = 2f64;
     let mut params: Vec<_> = (0..k)
         .map(|cl| {
             let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
-            dirichlet_fit::fit_multiple(&[centers], &[(1f64, weights)])
+            let dim = centers[0].len();
+            let mut optim = dirichlet_fit::AdamOptimizer::new(dim)
+                .learning_rate(0.01)
+                .norm(norm);
+            let param = [norm / (2f64).sqrt(), norm / (2f64).sqrt()];
+            dirichlet_fit::fit_multiple_with(&[centers], &[(1f64, weights)], &mut optim, &param)
         })
         .collect();
     for param in params.iter() {
@@ -71,7 +86,8 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
             .sum()
     }
     let mut current_lk = lk(centers, &params, &fractions);
-    trace!("LK\t{}\t{}", 1, current_lk);
+    trace!("Likelihood\tCount\tLK");
+    trace!("Likelihood\t{}\t{}", 1, current_lk);
     for t in 1..100 {
         // Update weight.
         for (center, weight) in centers.iter().zip(weights.iter_mut()) {
@@ -89,17 +105,18 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
         fractions = sum_and_normalize(&weights);
         for (cl, param) in params.iter_mut().enumerate() {
             let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
-            // let mut optim = dirichlet_fit::AdamOptimizer::new(param.len());
-            let mut optim = dirichlet_fit::AdamOptimizer::with_learning_rate(param.len(), 0.001);
             let lk: f64 = centers
                 .iter()
                 .zip(weights.iter())
                 .map(|(c, w)| w * dirichlet_fit::dirichlet_log(c, param))
                 .sum();
-            for (w, center) in weights.iter().zip(centers.iter()) {
-                trace!("DUMP\t{}\t{:.2}\t{}", t, w, vec2str(center));
-            }
-            trace!("===============");
+            // for (w, center) in weights.iter().zip(centers.iter()) {
+            //     trace!("DUMP\t{}\t{:.2}\t{}", t, w, vec2str(center));
+            // }
+            // trace!("===============");
+            let mut optim = dirichlet_fit::AdamOptimizer::new(param.len())
+                .learning_rate(0.01 / t as f64)
+                .norm(norm);
             *param = dirichlet_fit::fit_multiple_with(
                 &[centers],
                 &[(1f64, weights.clone())],
@@ -113,15 +130,16 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) {
                 .sum();
             trace!("OPTIM\t{:.2}->{:.2}", lk, updated);
         }
+        trace!("Current\t{}\t{}", vec2str(&params[0]), vec2str(&params[1]));
         // Update likelihood.
         let next_lk = lk(centers, &params, &fractions);
-        trace!("LK\t{}\t{}", t, next_lk);
+        trace!("Likelihood\t{}\t{}", t, next_lk);
+        if next_lk < current_lk + 0.0001 {
+            break;
+        }
         current_lk = next_lk;
     }
-    trace!("{}", current_lk);
-    for ((i, w), c) in weights.iter().enumerate().zip(centers.iter()) {
-        trace!("{}\t{}\t{}", i, vec2str(w), vec2str(c));
-    }
+    (weights, current_lk)
 }
 
 fn logsumexp(xs: &[f64]) -> f64 {

@@ -148,8 +148,8 @@ fn validate<
 /// ```
 /// # Panics
 /// Panics if an element in the dataset panics `dirichlet(data, param)`.
-/// You can handle the detail of the optimizing method, including of the parameters used in the Adam optimizer
-/// and the initial value of the parameters.
+/// You can handle the detail of the optimizing method, including of the parameters used in the optimizer,
+/// the initial value of the parameters, and additional constraint on the norm of the parameter(L2).
 pub fn fit_multiple_with<
     D: std::borrow::Borrow<[f64]>,
     E: std::borrow::Borrow<[D]>,
@@ -206,21 +206,35 @@ pub trait Optimizer {
     fn loop_count(&self) -> usize;
     fn threshold(&self) -> f64;
     fn shuffle(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))]);
+    fn normalize(&self, param: &mut [f64]) {
+        let sum: f64 = param.iter().map(|x| x * x).sum::<f64>().sqrt();
+        param.iter_mut().for_each(|x| *x /= sum);
+        if let Some(norm) = self.norm() {
+            param.iter_mut().for_each(|x| *x *= norm)
+        }
+    }
+    /// If there are some L2 constraint on the norm,
+    /// return Some(norm), otherwise, none.
+    fn norm(&self) -> Option<f64> {
+        None
+    }
     fn optim(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))], param: &mut [f64]) {
-        trace!("GRAD\tCount\tGrad");
-        trace!("LK\tCount\tLoss");
+        // trace!("GRAD\tCount\tGrad");
+        // trace!("LK\tCount\tLoss");
         let mut lk = likelihood(data, param);
-        trace!("LK\t{}\t{:.3}", self.loop_count(), lk);
+        // trace!("LK\t{}\t{:.3}", self.loop_count(), lk);
         let mut count_not_increased = 0;
         for _ in 0..10000 {
             self.shuffle(data);
             for (ds, weight) in data.iter() {
                 self.update(ds.as_slice(), *weight, param);
             }
+            // Rounding...
+            self.normalize(param);
             let likelihood = likelihood(data, param);
             self.tik();
-            trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
-            trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
+            // trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
+            // trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
             if likelihood <= lk {
                 count_not_increased += 1;
             } else {
@@ -228,7 +242,7 @@ pub trait Optimizer {
             }
             lk = lk.max(likelihood);
             if STOP_COUNT < count_not_increased {
-                return;
+                break;
             }
         }
     }
@@ -248,6 +262,7 @@ pub struct AdamOptimizer {
     sq_moment: Vec<f64>,
     rng: Xoshiro256StarStar,
     threshold: f64,
+    norm: Option<f64>,
 }
 
 impl AdamOptimizer {
@@ -259,13 +274,14 @@ impl AdamOptimizer {
     /// - `decay`: decay rate of the learinng rate. Recomment 1.
     /// - `seed`: seed used in the random number generator in AdamOptimizer.
     /// - `threshold`: if the lielihood did not increased `threshold` for T(=10) times, it early drops.
+    ///
     pub fn with_details(
         dim: usize,
         learning_rate: f64,
-        beta_1: f64,
-        beta_2: f64,
+        (beta_1, beta_2): (f64, f64),
         decay: f64,
         threshold: f64,
+        norm: Option<f64>,
         seed: u64,
     ) -> Self {
         Self {
@@ -280,18 +296,27 @@ impl AdamOptimizer {
             moment: vec![0f64; dim],
             sq_moment: vec![0f64; dim],
             rng: SeedableRng::seed_from_u64(seed),
+            norm,
         }
     }
-    pub fn with_learning_rate(dim: usize, learning_rate: f64) -> Self {
-        let mut opt = Self::new(dim);
-        opt.lr = learning_rate;
-        opt
+    /// Change learning rate.
+    pub fn learning_rate(mut self, lr: f64) -> Self {
+        self.lr = lr;
+        self
+    }
+    /// Set normalize constraint.
+    pub fn norm(mut self, norm: f64) -> Self {
+        self.norm = Some(norm);
+        self
     }
 }
 
 impl Optimizer for AdamOptimizer {
     fn threshold(&self) -> f64 {
         self.threshold
+    }
+    fn norm(&self) -> Option<f64> {
+        self.norm
     }
     fn new(dim: usize) -> Self {
         Self {
@@ -306,16 +331,21 @@ impl Optimizer for AdamOptimizer {
             moment: vec![0f64; dim],
             sq_moment: vec![0f64; dim],
             rng: SeedableRng::seed_from_u64(34820),
+            norm: None,
         }
     }
     fn tik(&mut self) {
         self.lr *= self.decay;
         self.loop_count += 1;
     }
-
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
         // Calculate gradient.
         let grad = get_gradient(ds, w_data, ws, param);
+        // If normalization is on, calc orthogonal vector.
+        let grad = match self.norm {
+            Some(_) => to_orthogonal(grad, param),
+            None => grad,
+        };
         // Update moment, sq_moment.
         self.moment
             .iter_mut()
@@ -330,20 +360,29 @@ impl Optimizer for AdamOptimizer {
         let factor_2 = 1f64 - self.beta_2.powi(self.loop_count as i32 + 1);
         let grad: Vec<_> = self.moment.iter().map(|m| m / factor_1).collect();
         let var: Vec<_> = self.sq_moment.iter().map(|v| v / factor_2).collect();
-        let grad = grad.iter().zip(var.iter()).map(|(g, v)| {
-            let div = v.sqrt() + self.epsilon;
-            self.lr * g / div
-        });
+        let grad: Vec<_> = grad
+            .into_iter()
+            .zip(var.iter())
+            .map(|(g, v)| {
+                let div = v.sqrt() + self.epsilon;
+                self.lr * g / div
+            })
+            .collect();
         // Scaling...
         let scaler = grad
-            .clone()
+            .iter()
             .zip(param.iter())
             .filter(|&(g, p)| p + g < 0f64)
-            .map(|(g, p)| p / 2.0 / g)
-            .min_by(|x, y| x.partial_cmp(y).unwrap())
+            .map(|(g, p)| 2.0 * g.abs() / p)
+            .max_by(|x, y| x.partial_cmp(y).unwrap())
             .unwrap_or(1f64);
-        let norm: f64 = grad.clone().map(|x| x * x * scaler).sum();
-        trace!("GRAD\t{}\t{:.2}", self.loop_count(), norm);
+        trace!(
+            "GRAD\t{}\t{}\t{}\t{}",
+            self.loop_count(),
+            vec2str(&param),
+            vec2str(&grad),
+            scaler,
+        );
         param
             .iter_mut()
             .zip(grad)
@@ -495,15 +534,28 @@ fn vec2str(xs: &[f64]) -> String {
 }
 
 fn get_gradient(ds: &[&[f64]], w_data: f64, ws: &[f64], param: &[f64]) -> Vec<f64> {
-    let mut grad = vec![0f64; param.len()];
     let param_sum: f64 = param.iter().sum();
     let sum_digam: f64 = digamma(param_sum);
-    let digam_diff: Vec<_> = param.iter().map(|&p| digamma(p) - sum_digam).collect();
+    let weight_sum: f64 = w_data * ws.iter().sum::<f64>();
+    let mut grad: Vec<_> = param
+        .iter()
+        .map(|&p| weight_sum * (sum_digam - digamma(p)))
+        .collect();
     for (w, logprob) in ws.iter().zip(ds.iter()) {
-        for ((grad, x), diff) in grad.iter_mut().zip(logprob.iter()).zip(&digam_diff) {
-            *grad += w_data * w * (diff + x);
+        for (grad, x) in grad.iter_mut().zip(logprob.iter()) {
+            *grad += w * x;
         }
     }
+    grad
+}
+
+// Return the component of the `grad` which is orthogonal to the `param`.
+fn to_orthogonal(mut grad: Vec<f64>, param: &[f64]) -> Vec<f64> {
+    let norm: f64 = param.iter().map(|x| x * x).sum();
+    let inner_product: f64 = grad.iter().zip(param.iter()).map(|(x, y)| x * y).sum();
+    grad.iter_mut()
+        .zip(param.iter())
+        .for_each(|(g, p)| *g -= inner_product * p / norm);
     grad
 }
 

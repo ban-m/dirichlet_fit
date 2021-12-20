@@ -14,11 +14,14 @@ fn main() {
             xs
         })
         .collect();
-    let estim = dirichlet_fit::fit(&data);
+    let mut estim = dirichlet_fit::fit(&data);
     let loss: f64 = data
         .iter()
         .map(|xs| dirichlet_fit::dirichlet_log(xs, param))
         .sum();
     eprintln!("OPT\t{:?}", loss);
-    eprintln!("{:?}", estim);
+    eprintln!("ANS\t{:?}", &[1.0, 8.0, 5.0, 10.0]);
+    let fst = estim[0];
+    estim.iter_mut().for_each(|x| *x /= fst);
+    eprintln!("PRD\t{:?}", estim);
 }
