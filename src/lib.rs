@@ -271,7 +271,7 @@ impl AdamOptimizer {
     /// - `learning_rate`: Learning rate of the Adam. Usually near 0, Recommend 0.01~0.03.
     /// - `beta_1`: Decay rate of the 1st order moment. Recommend 0.9.
     /// - `beta_2`: Decay rate of the 2nd order moment. Recommend 0.999.
-    /// - `decay`: decay rate of the learinng rate. Recomment 1.
+    /// - `decay`: decay rate of the learinng rate. Recommend 1.
     /// - `seed`: seed used in the random number generator in AdamOptimizer.
     /// - `threshold`: if the lielihood did not increased `threshold` for T(=10) times, it early drops.
     ///
@@ -322,11 +322,11 @@ impl Optimizer for AdamOptimizer {
         Self {
             dim,
             loop_count: 0,
-            lr: 0.03,
+            lr: 0.01,
             beta_1: 0.9,
             beta_2: 0.999,
             epsilon: 0.0000001,
-            decay: 1f64,
+            decay: 0.995,
             threshold: 0.0001,
             moment: vec![0f64; dim],
             sq_moment: vec![0f64; dim],
