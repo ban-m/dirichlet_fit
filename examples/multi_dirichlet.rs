@@ -37,6 +37,15 @@ fn main() {
         })
         .unzip();
     let mut estim = dirichlet_fit::fit_multiple(&batch, &weights);
+    estim.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    let norm = estim[0];
+    estim.iter_mut().for_each(|x| *x /= norm);
+    eprintln!("{:?}", estim);
+    use dirichlet_fit::Optimizer;
+    let mut optimizer = dirichlet_fit::GreedyOptimizer::new(4);
+    let initial_param = vec![1f64; 4];
+    let mut estim =
+        dirichlet_fit::fit_multiple_with(&batch, &weights, &mut optimizer, &initial_param);
     let norm = estim[0];
     estim.iter_mut().for_each(|x| *x /= norm);
     eprintln!("{:?}", estim);

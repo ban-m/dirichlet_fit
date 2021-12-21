@@ -16,7 +16,8 @@ fn gen_post_dist<R: Rng>(cl: usize, dim: usize, err: bool, rng: &mut R) -> Vec<f
 
 fn main() {
     env_logger::init();
-    let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4234);
+    let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(423304982094);
+    // let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4234);
     let len = 10;
     let centers: Vec<_> = (0..2 * len)
         .map(|i| gen_post_dist(i / len, 2, false, &mut rng))
@@ -61,10 +62,12 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
         .map(|cl| {
             let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
             let dim = centers[0].len();
-            let mut optim = dirichlet_fit::AdamOptimizer::new(dim)
-                .learning_rate(0.01)
-                .norm(norm);
-            let param = [norm / (2f64).sqrt(), norm / (2f64).sqrt()];
+            // let mut optim = dirichlet_fit::AdamOptimizer::new(dim)
+            //     .learning_rate(0.01)
+            //     .norm(norm);
+            // let param = [norm / (2f64).sqrt(), norm / (2f64).sqrt()];
+            let mut optim = dirichlet_fit::GreedyOptimizer::new(dim).set_norm(norm);
+            let param = [norm / 2f64; 2];
             dirichlet_fit::fit_multiple_with(&[centers], &[(1f64, weights)], &mut optim, &param)
         })
         .collect();
@@ -114,9 +117,10 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
             //     trace!("DUMP\t{}\t{:.2}\t{}", t, w, vec2str(center));
             // }
             // trace!("===============");
-            let mut optim = dirichlet_fit::AdamOptimizer::new(param.len())
-                .learning_rate(0.01 / t as f64)
-                .norm(norm);
+            // let mut optim = dirichlet_fit::AdamOptimizer::new(param.len())
+            //     .learning_rate(0.01 / t as f64)
+            //     .norm(norm);
+            let mut optim = dirichlet_fit::GreedyOptimizer::new(param.len()).set_norm(norm);
             *param = dirichlet_fit::fit_multiple_with(
                 &[centers],
                 &[(1f64, weights.clone())],

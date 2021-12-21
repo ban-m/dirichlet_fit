@@ -102,7 +102,7 @@ pub fn fit_multiple<
             }
         }
     }
-    let mut optimizer: AdamOptimizer = Optimizer::new(dim);
+    let mut optimizer: GreedyOptimizer = Optimizer::new(dim);
     fit_multiple_with(dataset, weights, &mut optimizer, &parameters)
 }
 
@@ -116,6 +116,8 @@ fn validate<
     weights: &[(f64, W)],
 ) -> Option<Vec<f64>> {
     assert_eq!(dataset.len(), weights.len());
+    assert!(!dataset.is_empty());
+    assert!(!dataset[0].borrow().is_empty());
     let dim = dataset[0].borrow()[0].borrow().len();
     if dim == 1 {
         warn!("The input data is 1-dim probability simplex, {{1.0}}.");
@@ -207,9 +209,9 @@ pub trait Optimizer {
     fn threshold(&self) -> f64;
     fn shuffle(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))]);
     fn normalize(&self, param: &mut [f64]) {
-        let sum: f64 = param.iter().map(|x| x * x).sum::<f64>().sqrt();
-        param.iter_mut().for_each(|x| *x /= sum);
         if let Some(norm) = self.norm() {
+            let sum: f64 = param.iter().map(|x| x * x).sum::<f64>().sqrt();
+            param.iter_mut().for_each(|x| *x /= sum);
             param.iter_mut().for_each(|x| *x *= norm)
         }
     }
@@ -218,11 +220,12 @@ pub trait Optimizer {
     fn norm(&self) -> Option<f64> {
         None
     }
+    /// This is the default implementation of the optimizer.
     fn optim(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))], param: &mut [f64]) {
+        self.normalize(param);
         // trace!("GRAD\tCount\tGrad");
         // trace!("LK\tCount\tLoss");
         let mut lk = likelihood(data, param);
-        // trace!("LK\t{}\t{:.3}", self.loop_count(), lk);
         let mut count_not_increased = 0;
         for _ in 0..10000 {
             self.shuffle(data);
@@ -340,7 +343,9 @@ impl Optimizer for AdamOptimizer {
     }
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
         // Calculate gradient.
-        let grad = get_gradient(ds, w_data, ws, param);
+        // let grad = get_gradient(ds, w_data, ws, param);
+        let mut grad = get_gradient(ds, ws, param);
+        grad.iter_mut().for_each(|g| *g *= w_data);
         // If normalization is on, calc orthogonal vector.
         let grad = match self.norm {
             Some(_) => to_orthogonal(grad, param),
@@ -431,7 +436,8 @@ impl Optimizer for MomentumOptimizer {
     }
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
         // Calc crad
-        let grad = get_gradient(ds, w_data, ws, param);
+        let mut grad = get_gradient(ds, ws, param);
+        grad.iter_mut().for_each(|g| *g *= w_data);
         // Merge with current moment.
         let lr = self.lr * (1f64 - self.decay);
         self.moment
@@ -466,19 +472,119 @@ impl Optimizer for MomentumOptimizer {
     }
 }
 
+/// `Norm` is to restrict the parameters to the hyperplane, satisfying the sum of the parameters equal to `norm`.
 #[allow(dead_code)]
-struct SGDOptimizer {
+pub struct GreedyOptimizer {
     dim: usize,
     loop_count: usize,
-    // Learning rate.
+    // learning rate
     lr: f64,
-    // learning decay rate.
-    decay: f64,
+    // Step size. Usually, 2f64.
+    step_size: f64,
     rng: Xoshiro256StarStar,
     threshold: f64,
+    norm: Option<f64>,
 }
 
-impl Optimizer for SGDOptimizer {
+impl GreedyOptimizer {
+    pub fn set_norm(mut self, norm: f64) -> Self {
+        self.norm = Some(norm);
+        self
+    }
+    fn scale(grad: &mut [f64], param: &[f64]) {
+        let scale = grad
+            .iter()
+            .zip(param.iter())
+            .filter(|&(g, p)| p + g < 0f64)
+            .map(|(g, p)| 2f64 * g.abs() / p)
+            .max_by(|x, y| x.partial_cmp(y).unwrap())
+            .unwrap_or(1f64);
+        grad.iter_mut().for_each(|x| *x /= scale);
+    }
+    // fn project_to_hyperplane(&self, grad: &mut [f64]) {
+    //     if let Some(norm) = self.norm() {
+    //         let sum: f64 = grad.iter().sum();
+    //         let offset = sum / self.dim as f64;
+    //         // Scale of orthogonal vector
+    //         let orth = norm / self.dim as f64;
+    //         grad.iter_mut().for_each(|g| *g = orth + *g - offset);
+    //     }
+    // }
+    fn substract_orthogonal_component(grad: &mut [f64]) {
+        let sum: f64 = grad.iter().sum();
+        let mean = sum / grad.len() as f64;
+        grad.iter_mut().for_each(|g| *g -= mean);
+    }
+    fn update_batch(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))], param: &mut [f64]) {
+        let mut grad = vec![0f64; param.len()];
+        for (ds, (w_data, ws)) in data.iter() {
+            grad.iter_mut()
+                .zip(get_gradient(ds, ws, param))
+                .for_each(|(g, x)| *g += w_data * x);
+        }
+        if self.norm.is_some() {
+            Self::substract_orthogonal_component(&mut grad);
+        }
+        Self::scale(&mut grad, param);
+        self.doubling_search(&grad, data, param);
+        param
+            .iter_mut()
+            .zip(grad)
+            .for_each(|(p, g)| *p += self.lr * g);
+    }
+    fn doubling_search(
+        &mut self,
+        grad: &[f64],
+        data: &[(Vec<&[f64]>, (f64, &[f64]))],
+        param: &[f64],
+    ) {
+        let learning_rate_bound: f64 = param
+            .iter()
+            .zip(grad.iter())
+            .filter(|&(_, &g)| g < 0f64)
+            .map(|(p, g)| -p / g)
+            .min_by(|x, y| x.partial_cmp(y).unwrap())
+            .unwrap_or(100000f64);
+        let mut jumped_to: Vec<_> = param
+            .iter()
+            .zip(grad.iter())
+            .map(|(p, g)| p + self.lr * g)
+            .collect();
+        let mut prev = likelihood(data, &param);
+        // trace!("TUNE\t{:.2}\t{}\t{}", prev, vec2str(param), self.lr);
+        let mut current = likelihood(data, &jumped_to);
+        // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+        if prev < current {
+            // Increase until the LK begins to decrease.
+            while prev < current && self.lr * self.step_size < learning_rate_bound {
+                self.lr *= self.step_size;
+                jumped_to
+                    .iter_mut()
+                    .zip(param.iter().zip(grad.iter()))
+                    .for_each(|(j, (p, g))| *j = p + self.lr * g);
+                // Maximum value so far, .max(prev) is not needed.
+                prev = current;
+                current = likelihood(data, &jumped_to);
+                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+            }
+            self.lr /= self.step_size;
+        } else {
+            // Decrease learning rate until the likelihood begins to increase.
+            // prev is the current maximum. Fix it.
+            while current < prev || self.threshold() < prev - current {
+                self.lr /= self.step_size;
+                jumped_to
+                    .iter_mut()
+                    .zip(param.iter().zip(grad.iter()))
+                    .for_each(|(j, (p, g))| *j = p + self.lr * g);
+                current = likelihood(data, &jumped_to);
+                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+            }
+        }
+    }
+}
+
+impl Optimizer for GreedyOptimizer {
     fn threshold(&self) -> f64 {
         self.threshold
     }
@@ -488,43 +594,72 @@ impl Optimizer for SGDOptimizer {
     fn loop_count(&self) -> usize {
         self.loop_count
     }
+    fn norm(&self) -> Option<f64> {
+        self.norm
+    }
     fn tik(&mut self) {
         self.loop_count += 1;
-        self.lr *= self.decay;
+        self.lr /= self.step_size;
     }
     fn new(dim: usize) -> Self {
         Self {
             loop_count: 0,
             dim,
-            lr: 0.01,
-            decay: 0.999,
+            lr: 0.001,
+            step_size: 2f64,
             threshold: 0.00001,
             rng: SeedableRng::seed_from_u64(232342),
+            norm: None,
         }
+    }
+    // As the log-from of the dirichlet distribution is convex w.r.t the parameters,
+    // the linear combination of them is also convex. Thus, we can integrate all of the
+    // gradient into one.
+    fn optim(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))], param: &mut [f64]) {
+        if let Some(norm) = self.norm() {
+            let sum: f64 = param.iter().sum();
+            assert!((sum-norm).abs() < 0.001, "When norm parameter is specified, the initial parameter should be suming up to {}\t({})",norm,vec2str(param));
+        }
+        let mut current_likelihood = likelihood(data, param);
+        trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
+        let mut count_not_increased = 0;
+        for _ in 0..10000 {
+            self.update_batch(data, param);
+            let likelihood = likelihood(data, param);
+            self.tik();
+            // trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
+            // trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
+            if likelihood <= current_likelihood + self.threshold() {
+                count_not_increased += 1;
+            } else {
+                count_not_increased = 0;
+            }
+            current_likelihood = current_likelihood.max(likelihood);
+            if STOP_COUNT < count_not_increased {
+                break;
+            }
+        }
+        trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
     }
     // Return likelihood.
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
-        // Calculate gradient.
-        let mut grad = get_gradient(ds, w_data, ws, param);
-        grad.iter_mut().for_each(|x| *x *= self.lr);
-        // Scaling...
-        if let Some(scale) = grad
-            .iter()
-            .zip(param.iter())
-            .filter(|&(g, p)| p + g < 0f64)
-            .map(|(g, p)| p / 2.0 / g)
-            .max_by(|x, y| x.partial_cmp(y).unwrap())
-        {
-            grad.iter_mut().for_each(|x| *x /= scale);
+        let mut grad = get_gradient(ds, ws, param);
+        grad.iter_mut().for_each(|g| *g *= w_data);
+        if self.norm.is_some() {
+            Self::substract_orthogonal_component(&mut grad);
         }
-        let scalar: f64 = grad.iter().map(|x| x * x).sum();
+        Self::scale(&mut grad, param);
         trace!(
-            "GRAD\t{}\t{:.2}\t[{}]",
+            "GRAD\t{}\t{:.2}\t{}\t{}",
             self.loop_count(),
-            scalar,
+            self.lr.log10(),
+            vec2str(&param),
             vec2str(&grad)
         );
-        param.iter_mut().zip(grad.iter()).for_each(|(p, g)| *p += g);
+        param
+            .iter_mut()
+            .zip(grad.iter())
+            .for_each(|(p, g)| *p += self.lr * g);
     }
 }
 
@@ -533,10 +668,11 @@ fn vec2str(xs: &[f64]) -> String {
     xs.join(",")
 }
 
-fn get_gradient(ds: &[&[f64]], w_data: f64, ws: &[f64], param: &[f64]) -> Vec<f64> {
+//fn get_gradient(ds: &[&[f64]], w_data: f64, ws: &[f64], param: &[f64]) -> Vec<f64> {
+fn get_gradient(ds: &[&[f64]], ws: &[f64], param: &[f64]) -> Vec<f64> {
     let param_sum: f64 = param.iter().sum();
     let sum_digam: f64 = digamma(param_sum);
-    let weight_sum: f64 = w_data * ws.iter().sum::<f64>();
+    let weight_sum: f64 = ws.iter().sum::<f64>();
     let mut grad: Vec<_> = param
         .iter()
         .map(|&p| weight_sum * (sum_digam - digamma(p)))
