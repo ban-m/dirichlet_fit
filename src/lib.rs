@@ -135,7 +135,7 @@ fn validate<
             assert_eq!(xs.len(), dim);
             let sum: f64 = xs.iter().map(|x| x.exp()).sum();
             assert!((1f64 - sum).abs() < 0.1);
-            xs.iter().for_each(|x| assert!(x.is_sign_negative()));
+            xs.iter().for_each(|&x| assert!(x <= 0f64));
         }
     }
     None
