@@ -381,13 +381,13 @@ impl Optimizer for AdamOptimizer {
             .map(|(g, p)| 2.0 * g.abs() / p)
             .max_by(|x, y| x.partial_cmp(y).unwrap())
             .unwrap_or(1f64);
-        trace!(
-            "GRAD\t{}\t{}\t{}\t{}",
-            self.loop_count(),
-            vec2str(&param),
-            vec2str(&grad),
-            scaler,
-        );
+        // trace!(
+        //     "GRAD\t{}\t{}\t{}\t{}",
+        //     self.loop_count(),
+        //     vec2str(&param),
+        //     vec2str(&grad),
+        //     scaler,
+        // );
         param
             .iter_mut()
             .zip(grad)
@@ -455,13 +455,13 @@ impl Optimizer for MomentumOptimizer {
         {
             self.moment.iter_mut().for_each(|x| *x /= scale);
         }
-        let scalar: f64 = self.moment.iter().map(|x| x * x).sum();
-        trace!(
-            "GRAD\t{}\t{:.2}\t[{}]",
-            self.loop_count(),
-            scalar,
-            vec2str(&self.moment)
-        );
+        // let scalar: f64 = self.moment.iter().map(|x| x * x).sum();
+        // trace!(
+        //     "GRAD\t{}\t{:.2}\t[{}]",
+        //     self.loop_count(),
+        //     scalar,
+        //     vec2str(&self.moment)
+        // );
         param
             .iter_mut()
             .zip(&self.moment)
@@ -486,6 +486,7 @@ pub struct GreedyOptimizer {
     norm: Option<f64>,
 }
 
+const LEARNING_RATE_BOUND: f64 = 100000f64;
 impl GreedyOptimizer {
     pub fn set_norm(mut self, norm: f64) -> Self {
         self.norm = Some(norm);
@@ -525,13 +526,18 @@ impl GreedyOptimizer {
         }
         if self.norm.is_some() {
             Self::substract_orthogonal_component(&mut grad);
+            assert!(grad.iter().sum::<f64>().abs() < 0.000001);
         }
-        // Self::scale(&mut grad, param);
         self.doubling_search(&grad, data, param);
         param
             .iter_mut()
-            .zip(grad)
+            .zip(grad.iter())
             .for_each(|(p, g)| *p += self.lr * g);
+        if self.norm.is_some() {
+            assert!(grad.iter().sum::<f64>().abs() < 0.000001);
+            let total: f64 = grad.iter().map(|x| x * self.lr).sum();
+            assert!(total.abs() < 0.000001, "{:?},{}", grad, self.lr);
+        }
     }
     fn doubling_search(
         &mut self,
@@ -546,7 +552,8 @@ impl GreedyOptimizer {
             .filter(|&(_, &g)| g < 0f64)
             .map(|(p, g)| -p / g / 2f64)
             .min_by(|x, y| x.partial_cmp(y).unwrap())
-            .unwrap_or(100000f64);
+            .unwrap_or(100000f64)
+            .min(LEARNING_RATE_BOUND);
         self.lr = self.lr.min(learning_rate_bound);
         let mut jumped_to: Vec<_> = param
             .iter()
@@ -554,10 +561,10 @@ impl GreedyOptimizer {
             .map(|(p, g)| p + self.lr * g)
             .collect();
         let mut prev = likelihood(data, &param);
-        trace!("TUNE\t{:.2}\t{}\t{}", prev, vec2str(param), self.lr);
+        //trace!("TUNE\t{:.2}\t{}\t{}", prev, vec2str(param), self.lr);
         let mut current = likelihood(data, &jumped_to);
-        trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
-        trace!("GRAD\t{:?}", grad);
+        // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+        // trace!("GRAD\t{:?}", grad);
         assert!(!current.is_nan());
         if prev < current {
             // Increase until the LK begins to decrease.
@@ -570,7 +577,7 @@ impl GreedyOptimizer {
                 // Maximum value so far, .max(prev) is not needed.
                 prev = current;
                 current = likelihood(data, &jumped_to);
-                trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
                 assert!(!current.is_nan());
             }
             self.lr /= self.step_size;
@@ -585,7 +592,7 @@ impl GreedyOptimizer {
                     .for_each(|(j, (p, g))| *j = p + self.lr * g);
                 current = likelihood(data, &jumped_to);
                 assert!(!current.is_nan());
-                trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
             }
         }
     }
@@ -628,14 +635,14 @@ impl Optimizer for GreedyOptimizer {
             assert!((sum-norm).abs() < 0.001, "When norm parameter is specified, the initial parameter should be summing up to {}({:?})",norm,param);
         }
         let mut current_likelihood = likelihood(data, param);
-        trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
+        // trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
         let mut count_not_increased = 0;
         for _ in 0..10000 {
             self.update_batch(data, param);
             let likelihood = likelihood(data, param);
             self.tik();
-            trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
-            trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
+            // trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
+            // trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
             if likelihood <= current_likelihood + self.threshold() {
                 count_not_increased += 1;
             } else {
@@ -646,7 +653,11 @@ impl Optimizer for GreedyOptimizer {
                 break;
             }
         }
-        trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
+        if let Some(norm) = self.norm() {
+            let sum: f64 = param.iter().sum();
+            assert!((sum - norm).abs() < 0.001, "{}({:?})", norm, param);
+        }
+        // trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
     }
     // Return likelihood.
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
@@ -664,13 +675,13 @@ impl Optimizer for GreedyOptimizer {
             .max_by(|x, y| x.partial_cmp(y).unwrap())
             .unwrap_or(1f64);
         grad.iter_mut().for_each(|x| *x /= scale);
-        trace!(
-            "GRAD\t{}\t{:.2}\t{}\t{}",
-            self.loop_count(),
-            self.lr.log10(),
-            vec2str(&param),
-            vec2str(&grad)
-        );
+        // trace!(
+        //     "GRAD\t{}\t{:.2}\t{}\t{}",
+        //     self.loop_count(),
+        //     self.lr.log10(),
+        //     vec2str(&param),
+        //     vec2str(&grad)
+        // );
         param
             .iter_mut()
             .zip(grad.iter())
@@ -678,6 +689,7 @@ impl Optimizer for GreedyOptimizer {
     }
 }
 
+#[allow(dead_code)]
 fn vec2str(xs: &[f64]) -> String {
     let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
     xs.join(",")
