@@ -618,7 +618,7 @@ impl Optimizer for GreedyOptimizer {
     fn optim(&mut self, data: &mut [(Vec<&[f64]>, (f64, &[f64]))], param: &mut [f64]) {
         if let Some(norm) = self.norm() {
             let sum: f64 = param.iter().sum();
-            assert!((sum-norm).abs() < 0.001, "When norm parameter is specified, the initial parameter should be suming up to {}\t({})",norm,vec2str(param));
+            assert!((sum-norm).abs() < 0.001, "When norm parameter is specified, the initial parameter should be summing up to {}({:?})",norm,param);
         }
         let mut current_likelihood = likelihood(data, param);
         trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
