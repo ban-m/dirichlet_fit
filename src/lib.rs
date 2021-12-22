@@ -491,16 +491,17 @@ impl GreedyOptimizer {
         self.norm = Some(norm);
         self
     }
-    fn scale(grad: &mut [f64], param: &[f64]) {
-        let scale = grad
-            .iter()
-            .zip(param.iter())
-            .filter(|&(g, p)| p + g < 0f64)
-            .map(|(g, p)| 2f64 * g.abs() / p)
-            .max_by(|x, y| x.partial_cmp(y).unwrap())
-            .unwrap_or(1f64);
-        grad.iter_mut().for_each(|x| *x /= scale);
-    }
+    // Divide by scale so that it would be contained in the parameter space.
+    // fn scale(grad: &mut [f64], param: &[f64]) {
+    //     let scale = grad
+    //         .iter()
+    //         .zip(param.iter())
+    //         .filter(|&(g, p)| p + g < 0f64)
+    //         .map(|(g, p)| 2f64 * g.abs() / p)
+    //         .max_by(|x, y| x.partial_cmp(y).unwrap())
+    //         .unwrap_or(1f64);
+    //     grad.iter_mut().for_each(|x| *x /= scale);
+    // }
     // fn project_to_hyperplane(&self, grad: &mut [f64]) {
     //     if let Some(norm) = self.norm() {
     //         let sum: f64 = grad.iter().sum();
@@ -525,7 +526,7 @@ impl GreedyOptimizer {
         if self.norm.is_some() {
             Self::substract_orthogonal_component(&mut grad);
         }
-        Self::scale(&mut grad, param);
+        // Self::scale(&mut grad, param);
         self.doubling_search(&grad, data, param);
         param
             .iter_mut()
@@ -538,22 +539,26 @@ impl GreedyOptimizer {
         data: &[(Vec<&[f64]>, (f64, &[f64]))],
         param: &[f64],
     ) {
+        // The 2 is to avoid the parameter from reaching zero.
         let learning_rate_bound: f64 = param
             .iter()
             .zip(grad.iter())
             .filter(|&(_, &g)| g < 0f64)
-            .map(|(p, g)| -p / g)
+            .map(|(p, g)| -p / g / 2f64)
             .min_by(|x, y| x.partial_cmp(y).unwrap())
             .unwrap_or(100000f64);
+        self.lr = self.lr.min(learning_rate_bound);
         let mut jumped_to: Vec<_> = param
             .iter()
             .zip(grad.iter())
             .map(|(p, g)| p + self.lr * g)
             .collect();
         let mut prev = likelihood(data, &param);
-        // trace!("TUNE\t{:.2}\t{}\t{}", prev, vec2str(param), self.lr);
+        trace!("TUNE\t{:.2}\t{}\t{}", prev, vec2str(param), self.lr);
         let mut current = likelihood(data, &jumped_to);
-        // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+        trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+        trace!("GRAD\t{:?}", grad);
+        assert!(!current.is_nan());
         if prev < current {
             // Increase until the LK begins to decrease.
             while prev < current && self.lr * self.step_size < learning_rate_bound {
@@ -565,7 +570,8 @@ impl GreedyOptimizer {
                 // Maximum value so far, .max(prev) is not needed.
                 prev = current;
                 current = likelihood(data, &jumped_to);
-                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+                trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+                assert!(!current.is_nan());
             }
             self.lr /= self.step_size;
         } else {
@@ -578,7 +584,8 @@ impl GreedyOptimizer {
                     .zip(param.iter().zip(grad.iter()))
                     .for_each(|(j, (p, g))| *j = p + self.lr * g);
                 current = likelihood(data, &jumped_to);
-                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
+                assert!(!current.is_nan());
+                trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
             }
         }
     }
@@ -627,8 +634,8 @@ impl Optimizer for GreedyOptimizer {
             self.update_batch(data, param);
             let likelihood = likelihood(data, param);
             self.tik();
-            // trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
-            // trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
+            trace!("LK\t{}\t{:.3}", self.loop_count(), likelihood,);
+            trace!("PARAM\t{}\t[{}]", self.loop_count(), vec2str(&param));
             if likelihood <= current_likelihood + self.threshold() {
                 count_not_increased += 1;
             } else {
@@ -648,7 +655,15 @@ impl Optimizer for GreedyOptimizer {
         if self.norm.is_some() {
             Self::substract_orthogonal_component(&mut grad);
         }
-        Self::scale(&mut grad, param);
+        // Self::scale(&mut grad, param);
+        let scale = grad
+            .iter()
+            .zip(param.iter())
+            .filter(|&(g, p)| p + g < 0f64)
+            .map(|(g, p)| 2f64 * g.abs() / p)
+            .max_by(|x, y| x.partial_cmp(y).unwrap())
+            .unwrap_or(1f64);
+        grad.iter_mut().for_each(|x| *x /= scale);
         trace!(
             "GRAD\t{}\t{:.2}\t{}\t{}",
             self.loop_count(),
