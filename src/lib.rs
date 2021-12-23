@@ -635,7 +635,13 @@ impl Optimizer for GreedyOptimizer {
             assert!((sum-norm).abs() < 0.001, "When norm parameter is specified, the initial parameter should be summing up to {}({:?})",norm,param);
         }
         let mut current_likelihood = likelihood(data, param);
-        // trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
+        let before = current_likelihood;
+        // trace!(
+        //     "GAIN\t{}\t{:.3}\t{}",
+        //     self.loop_count(),
+        //     before,
+        //     vec2str(param)
+        // );
         let mut count_not_increased = 0;
         for _ in 0..10000 {
             self.update_batch(data, param);
@@ -657,7 +663,14 @@ impl Optimizer for GreedyOptimizer {
             let sum: f64 = param.iter().sum();
             assert!((sum - norm).abs() < 0.001, "{}({:?})", norm, param);
         }
-        // trace!("GAIN\t{}\t{:.3}", self.loop_count(), current_likelihood);
+        let after = current_likelihood;
+        assert!(before <= after);
+        // trace!(
+        //     "GAIN\t{}\t{:.3}\t{}",
+        //     self.loop_count(),
+        //     after,
+        //     vec2str(param)
+        // );
     }
     // Return likelihood.
     fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
