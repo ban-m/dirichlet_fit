@@ -40,6 +40,7 @@ pub fn dirichlet(probability: &[f64], parameters: &[f64]) -> f64 {
 
 /// Return log Dir(exp(`log_prob`)|`parameters`).
 /// The difference between [dirichlet] is that it takes the input probability as loged form.
+/// If you would calculate diriclet log many times, consider using the `Dirichlet` struct.
 /// # Example
 /// ```rust
 /// let prob = [0.1f64.ln(),0.9f64.ln()]; // <- same as [0.1,0.9].
@@ -59,6 +60,134 @@ pub fn dirichlet_log(log_prob: &[f64], parameters: &[f64]) -> f64 {
         lk += (param - 1f64) * log_prob;
     }
     unsafe { lgamma(sum) - scale + lk }
+}
+
+/// Dirichlet distribution.
+#[derive(Debug, Clone)]
+pub struct Dirichlet {
+    dim: usize,
+    param: Vec<f64>,
+    // Normalize coefficient.
+    norm_coef: f64,
+}
+
+impl Dirichlet {
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+    pub fn lk(&self, log_prob: &[f64]) -> f64 {
+        match self.dim {
+            1 => 0f64,
+            _ => {
+                assert_eq!(self.param.len(), log_prob.len());
+                let lk: f64 = self
+                    .param
+                    .iter()
+                    .zip(log_prob)
+                    .map(|(pa, pr)| (pa - 1f64) * pr)
+                    .sum();
+                self.norm_coef + lk
+            }
+        }
+    }
+    pub fn update_multiple(
+        &mut self,
+        dataset: &[Vec<&[f64]>],
+        weights: &[(f64, Vec<f64>)],
+        norm: Option<f64>,
+    ) {
+        if 1 < self.dim {
+            let mut dataset: Vec<(Vec<&[f64]>, (f64, &[f64]))> = dataset
+                .iter()
+                .zip(weights.iter())
+                .map(|(ds, (w_data, ws))| (ds.clone(), (*w_data, ws.as_slice())))
+                .collect();
+            let mut optimizer = GreedyOptimizer::new(self.dim);
+            optimizer.norm = norm;
+            optimizer.optim(&mut dataset, &mut self.param);
+            let sum: f64 = self.param.iter().sum();
+            let scale: f64 = self.param.iter().map(|&p| unsafe { lgamma(p) }).sum();
+            self.norm_coef = unsafe { lgamma(sum) - scale };
+        }
+    }
+    pub fn update<T: std::borrow::Borrow<[f64]>>(
+        &mut self,
+        obs: &[T],
+        weights: &[f64],
+        norm: Option<f64>,
+    ) {
+        if 1 < self.dim {
+            let mut optimizer = GreedyOptimizer::new(self.dim);
+            optimizer.norm = norm;
+            let obs: Vec<&[f64]> = obs.iter().map(|x| x.borrow()).collect();
+            let mut data = [(obs, (1f64, weights))];
+            optimizer.optim(&mut data, &mut self.param);
+            let sum: f64 = self.param.iter().sum();
+            let scale: f64 = self.param.iter().map(|&p| unsafe { lgamma(p) }).sum();
+            self.norm_coef = unsafe { lgamma(sum) - scale };
+        }
+    }
+    pub fn new(param: &[f64]) -> Self {
+        let sum: f64 = param.iter().sum();
+        let scale: f64 = param.iter().map(|&p| unsafe { lgamma(p) }).sum();
+        let norm_coef = unsafe { lgamma(sum) - scale };
+        Self {
+            dim: param.len(),
+            param: param.to_vec(),
+            norm_coef,
+        }
+    }
+    pub fn fit<T: std::borrow::Borrow<[f64]>>(
+        obs: &[T],
+        weights: &[f64],
+        dim: usize,
+        norm: Option<f64>,
+    ) -> Self {
+        if dim <= 1 {
+            let param = match norm {
+                Some(norm) => vec![norm; dim],
+                None => vec![1f64; dim],
+            };
+            return Self::new(&param);
+        } else if obs.is_empty() || weights.is_empty() {
+            let param = match norm {
+                Some(norm) => vec![norm * (dim as f64).recip(); dim],
+                None => vec![1f64; dim],
+            };
+            return Self::new(&param);
+        }
+        let mut param = match norm {
+            Some(norm) => vec![norm * (dim as f64).recip(); dim],
+            None => vec![1f64; dim],
+        };
+        let mut optimizer = GreedyOptimizer::new(dim);
+        optimizer.norm = norm;
+        let data: Vec<_> = obs.iter().map(|x| x.borrow()).collect();
+        let mut data = [(data, (1f64, weights))];
+        optimizer.optim(&mut data, &mut param);
+        if param.iter().any(|x| x.is_nan()) {
+            for (x, w) in obs.iter().zip(weights.iter()) {
+                eprintln!("{}\t{}", w, vec2str(x.borrow()));
+            }
+            eprintln!("{:?}", param);
+            panic!();
+        }
+        Self::new(&param)
+    }
+}
+
+impl std::fmt::Display for Dirichlet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, p) in self.param.iter().enumerate() {
+            if i != self.dim - 1 {
+                write!(f, "{:.2},", p)?;
+            } else {
+                write!(f, "{:.2}", p)?;
+            }
+        }
+        write!(f, "]")
+    }
 }
 
 /// Return the estimated parameters maximixing `Dir(exp(data)|parameters)`
