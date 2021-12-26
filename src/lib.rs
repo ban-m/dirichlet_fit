@@ -274,12 +274,12 @@ impl GreedyOptimizer {
         assert!(!current.is_nan());
         if prev < current {
             // Increase until the LK begins to decrease.
-            while prev < current && self.lr * self.step_size < learning_rate_bound {
+            while prev < current && lr * self.step_size < learning_rate_bound {
                 lr *= self.step_size;
                 jumped_to
                     .iter_mut()
                     .zip(param.iter().zip(grad.iter()))
-                    .for_each(|(j, (p, g))| *j = p + self.lr * g);
+                    .for_each(|(j, (p, g))| *j = p + lr * g);
                 // Maximum value so far, .max(prev) is not needed.
                 prev = current;
                 current = dirichlet_log(data, &jumped_to);
@@ -295,8 +295,9 @@ impl GreedyOptimizer {
                 jumped_to
                     .iter_mut()
                     .zip(param.iter().zip(grad.iter()))
-                    .for_each(|(j, (p, g))| *j = p + self.lr * g);
+                    .for_each(|(j, (p, g))| *j = p + lr * g);
                 current = dirichlet_log(data, &jumped_to);
+                // trace!("TUNE\t{:.2}\t{}\t{}", current, vec2str(&jumped_to), self.lr);
                 assert!(!current.is_nan());
             }
         }
@@ -327,32 +328,11 @@ impl Optimizer for GreedyOptimizer {
             dim,
             lr: 0.001,
             step_size: 2f64,
-            threshold: 0.000000000000000000000001,
+            threshold: 0.000000000001,
             rng: SeedableRng::seed_from_u64(232342),
             norm: None,
         }
     }
-    // Return likelihood.
-    // fn update(&mut self, ds: &[&[f64]], (w_data, ws): (f64, &[f64]), param: &mut [f64]) {
-    //     let mut grad = get_gradient(ds, ws, param);
-    //     grad.iter_mut().for_each(|g| *g *= w_data);
-    //     if self.norm.is_some() {
-    //         Self::substract_orthogonal_component(&mut grad);
-    //     }
-    //     // Self::scale(&mut grad, param);
-    //     let scale = grad
-    //         .iter()
-    //         .zip(param.iter())
-    //         .filter(|&(g, p)| p + g < 0f64)
-    //         .map(|(g, p)| 2f64 * g.abs() / p)
-    //         .max_by(|x, y| x.partial_cmp(y).unwrap())
-    //         .unwrap_or(1f64);
-    //     grad.iter_mut().for_each(|x| *x /= scale);
-    //     param
-    //         .iter_mut()
-    //         .zip(grad.iter())
-    //         .for_each(|(p, g)| *p += self.lr * g);
-    // }
     fn optim(&mut self, xs: &[f64], param: &mut [f64]) {
         if let Some(norm) = self.norm() {
             let sum: f64 = param.iter().sum();
@@ -378,11 +358,11 @@ impl Optimizer for GreedyOptimizer {
             if self.norm.is_some() {
                 Self::substract_orthogonal_component(&mut grad);
             }
-            let learning_rate = self.doubling_search(&grad, xs, param);
+            self.lr = self.doubling_search(&grad, xs, param);
             param
                 .iter_mut()
                 .zip(grad.iter())
-                .for_each(|(p, g)| *p += learning_rate * g);
+                .for_each(|(p, g)| *p += self.lr * g);
             let likelihood = dirichlet_log(&xs, param);
             self.tik();
             if likelihood <= current_likelihood + self.threshold() {
