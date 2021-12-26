@@ -36,16 +36,18 @@ fn main() {
             (data, (conf, weights))
         })
         .unzip();
-    let mut estim = dirichlet_fit::fit_multiple(&batch, &weights);
+    let (mut sums, mut total) = (vec![0f64; params[0].len()], 0f64);
+    for (data, (w_data, ws)) in batch.iter().zip(weights.iter()) {
+        total += w_data * ws.iter().sum::<f64>();
+        for (w, xs) in ws.iter().zip(data.iter()) {
+            sums.iter_mut()
+                .zip(xs.iter())
+                .for_each(|(s, x)| *s += w_data * w * x);
+        }
+    }
+    sums.iter_mut().for_each(|x| *x /= total);
+    let mut estim = dirichlet_fit::fit_data(&sums);
     estim.sort_by(|x, y| x.partial_cmp(y).unwrap());
-    let norm = estim[0];
-    estim.iter_mut().for_each(|x| *x /= norm);
-    eprintln!("{:?}", estim);
-    use dirichlet_fit::Optimizer;
-    let mut optimizer = dirichlet_fit::GreedyOptimizer::new(4);
-    let initial_param = vec![1f64; 4];
-    let mut estim =
-        dirichlet_fit::fit_multiple_with(&batch, &weights, &mut optimizer, &initial_param);
     let norm = estim[0];
     estim.iter_mut().for_each(|x| *x /= norm);
     eprintln!("{:?}", estim);

@@ -1,6 +1,6 @@
 #[macro_use]
 extern crate log;
-use dirichlet_fit::Optimizer;
+use dirichlet_fit::{GreedyOptimizer, Optimizer};
 use rand::{Rng, SeedableRng};
 use rand_distr::{self, Distribution};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -17,7 +17,6 @@ fn gen_post_dist<R: Rng>(cl: usize, dim: usize, err: bool, rng: &mut R) -> Vec<f
 fn main() {
     env_logger::init();
     let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(423304982094);
-    // let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4234);
     let len = 10;
     let centers: Vec<_> = (0..2 * len)
         .map(|i| gen_post_dist(i / len, 2, false, &mut rng))
@@ -25,7 +24,6 @@ fn main() {
     for (i, center) in centers.iter().enumerate() {
         trace!("{}\t{}", i, vec2str(center));
     }
-    // let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(4);
     let (asn, lk) = (0..1)
         .map(|_| center_clustering(&centers, 2, &mut rng))
         .max_by(|x, y| x.1.partial_cmp(&(y.1)).unwrap())
@@ -34,7 +32,6 @@ fn main() {
         let center: Vec<_> = center.iter().map(|x| x.exp()).collect();
         trace!("{}\t{}", vec2str(&center), vec2str(asn));
     }
-
     trace!("FINAL\t{}", lk)
 }
 fn sum_and_normalize(xss: &[Vec<f64>]) -> Vec<f64> {
@@ -60,15 +57,19 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
     let norm = 2f64;
     let mut params: Vec<_> = (0..k)
         .map(|cl| {
-            let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
             let dim = centers[0].len();
-            // let mut optim = dirichlet_fit::AdamOptimizer::new(dim)
-            //     .learning_rate(0.01)
-            //     .norm(norm);
-            // let param = [norm / (2f64).sqrt(), norm / (2f64).sqrt()];
-            let mut optim = dirichlet_fit::GreedyOptimizer::new(dim).set_norm(norm);
-            let param = [norm / 2f64; 2];
-            dirichlet_fit::fit_multiple_with(&[centers], &[(1f64, weights)], &mut optim, &param)
+            let mut sums = vec![0f64; dim];
+            let mut total = 0f64;
+            for (ws, center) in weights.iter().zip(centers.iter()) {
+                let w = ws[cl];
+                total += w;
+                sums.iter_mut()
+                    .zip(center.iter())
+                    .for_each(|(s, c)| *s += w * c);
+            }
+            sums.iter_mut().for_each(|s| *s /= total);
+            let mut optim = GreedyOptimizer::new(dim).set_norm(norm);
+            dirichlet_fit::fit_data_with(&sums, &mut optim, &vec![norm / dim as f64; dim])
         })
         .collect();
     for param in params.iter() {
@@ -113,20 +114,18 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
                 .zip(weights.iter())
                 .map(|(c, w)| w * dirichlet_fit::dirichlet_log(c, param))
                 .sum();
-            // for (w, center) in weights.iter().zip(centers.iter()) {
-            //     trace!("DUMP\t{}\t{:.2}\t{}", t, w, vec2str(center));
-            // }
-            // trace!("===============");
-            // let mut optim = dirichlet_fit::AdamOptimizer::new(param.len())
-            //     .learning_rate(0.01 / t as f64)
-            //     .norm(norm);
-            let mut optim = dirichlet_fit::GreedyOptimizer::new(param.len()).set_norm(norm);
-            *param = dirichlet_fit::fit_multiple_with(
-                &[centers],
-                &[(1f64, weights.clone())],
-                &mut optim,
-                param,
-            );
+            let mut total = 0f64;
+            let mut sums = vec![0f64; centers[0].len()];
+            for (w, xs) in weights.iter().zip(centers.iter()) {
+                total += w;
+                sums.iter_mut()
+                    .zip(xs.iter())
+                    .for_each(|(s, x)| *s += w * x);
+            }
+            sums.iter_mut().for_each(|s| *s /= total);
+            trace!("W\t{}\t{}\t{}", t, cl, total);
+            let mut optim = GreedyOptimizer::new(param.len()).set_norm(norm);
+            *param = dirichlet_fit::fit_data_with(&sums, &mut optim, &param);
             let updated: f64 = centers
                 .iter()
                 .zip(weights.iter())
