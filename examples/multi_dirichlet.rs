@@ -46,7 +46,8 @@ fn main() {
         }
     }
     sums.iter_mut().for_each(|x| *x /= total);
-    let mut estim = dirichlet_fit::fit_data(&sums);
+    //let mut estim = dirichlet_fit::fit_data(&sums);
+    let mut estim = dirichlet_fit::fit_dirichlet(&sums);
     estim.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let norm = estim[0];
     estim.iter_mut().for_each(|x| *x /= norm);

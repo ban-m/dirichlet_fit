@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate log;
-use dirichlet_fit::{GreedyOptimizer, Optimizer};
 use rand::{Rng, SeedableRng};
+// use dirichlet_fit::{GreedyOptimizer, Optimizer};
 use rand_distr::{self, Distribution};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -54,7 +54,7 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
     for (ws, center) in weights.iter().zip(centers.iter()) {
         trace!("DUMP\t{}\t{}", vec2str(center), vec2str(ws));
     }
-    let norm = 2f64;
+    let norm = 4.1f64;
     let mut params: Vec<_> = (0..k)
         .map(|cl| {
             let dim = centers[0].len();
@@ -68,8 +68,11 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
                     .for_each(|(s, c)| *s += w * c);
             }
             sums.iter_mut().for_each(|s| *s /= total);
-            let mut optim = GreedyOptimizer::new(dim).set_norm(norm);
-            dirichlet_fit::fit_data_with(&sums, &mut optim, &vec![norm / dim as f64; dim])
+            let mut param = vec![norm / dim as f64; dim];
+            let mut buf1 = param.clone();
+            dirichlet_fit::fit_dirichlet_only_mean(&sums, &mut param, &mut buf1);
+            //dirichlet_fit::fit_dirichlet_with(&sums, &mut param, &mut buf1);
+            param
         })
         .collect();
     for param in params.iter() {
@@ -108,36 +111,25 @@ fn center_clustering<R: Rng>(centers: &[Vec<f64>], k: usize, rng: &mut R) -> (Ve
         // Update parameters.
         fractions = sum_and_normalize(&weights);
         for (cl, param) in params.iter_mut().enumerate() {
-            let weights: Vec<_> = weights.iter().map(|ws| ws[cl]).collect();
-            let lk: f64 = centers
-                .iter()
-                .zip(weights.iter())
-                .map(|(c, w)| w * dirichlet_fit::dirichlet_log(c, param))
-                .sum();
             let mut total = 0f64;
             let mut sums = vec![0f64; centers[0].len()];
-            for (w, xs) in weights.iter().zip(centers.iter()) {
+            for (ws, xs) in weights.iter().zip(centers.iter()) {
+                let w = ws[cl];
                 total += w;
                 sums.iter_mut()
                     .zip(xs.iter())
                     .for_each(|(s, x)| *s += w * x);
             }
             sums.iter_mut().for_each(|s| *s /= total);
-            trace!("W\t{}\t{}\t{}", t, cl, total);
-            let mut optim = GreedyOptimizer::new(param.len()).set_norm(norm);
-            *param = dirichlet_fit::fit_data_with(&sums, &mut optim, &param);
-            let updated: f64 = centers
-                .iter()
-                .zip(weights.iter())
-                .map(|(c, w)| w * dirichlet_fit::dirichlet_log(c, param))
-                .sum();
-            trace!("OPTIM\t{:.2}->{:.2}", lk, updated);
+            let mut buf1 = param.to_vec();
+            trace!("{}\t{}", cl, vec2str(&sums));
+            dirichlet_fit::fit_dirichlet_only_mean(&sums, param, &mut buf1);
+            // dirichlet_fit::fit_dirichlet_with(&sums, param, &mut buf1);
         }
         trace!("Current\t{}\t{}", vec2str(&params[0]), vec2str(&params[1]));
-        // Update likelihood.
         let next_lk = lk(centers, &params, &fractions);
         trace!("Likelihood\t{}\t{}", t, next_lk);
-        if next_lk < current_lk + 0.0001 {
+        if next_lk < current_lk + 0.000000001 {
             break;
         }
         current_lk = next_lk;
