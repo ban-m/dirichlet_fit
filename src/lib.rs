@@ -113,7 +113,6 @@ impl Dirichlet {
             self.norm_coef = unsafe { lgamma(sum) - scale };
             let new_lk = self.lk(xs);
             if new_lk < lk {
-                // revert update.
                 *self = prev;
             }
         }
@@ -581,7 +580,7 @@ fn update_new_mean(prec: f64, xs: &[f64], param: &mut [f64], buf: &mut [f64]) {
         .filter(|&(_, &x)| x < LOG_FILTER)
         .fold(0f64, |x, (p, _)| x + p);
     let distrib = 1f64 - retain_sum;
-    for _ in 0.. {
+    for _t in 0.. {
         buf.clone_from_slice(param);
         let offset: f64 = param
             .iter()
@@ -593,7 +592,7 @@ fn update_new_mean(prec: f64, xs: &[f64], param: &mut [f64], buf: &mut [f64]) {
             .iter_mut()
             .zip(xs.iter())
             .filter(|&(_, &x)| LOG_FILTER < x)
-            .for_each(|(p, x)| *p = digam_inv(x + offset));
+            .for_each(|(p, x)| *p = digam_inv_safe(x + offset));
         let sum: f64 = param
             .iter()
             .zip(xs.iter())
@@ -607,13 +606,11 @@ fn update_new_mean(prec: f64, xs: &[f64], param: &mut [f64], buf: &mut [f64]) {
             .for_each(|(p, _)| *p /= factor);
         let sum: f64 = param.iter().sum();
         assert!((1f64 - sum).abs() < 0.0001, "{:?}", param);
-        // param.iter_mut().for_each(|x| *x /= sum);
         let diff: f64 = param
             .iter()
             .zip(buf.iter())
             .map(|(x, y)| (x - y).powi(2))
             .sum();
-        // debug!("diff\t{}\t{:?}", diff, param);
         if diff < SMALL_VAL {
             break;
         }
@@ -680,6 +677,35 @@ fn stop_after_greedy(prec: f64, xs: &[f64], param: &mut [f64], buf: &mut [f64]) 
 //     guess
 // }
 
+// This is *safer* version of the digamma inverse function,
+// namely, if the y is greater than 20,
+// we consider digam(x) ~ ln x - 1/2x < 20 and
+// usualy x is very very large, thus 1/2x can be ignored.
+// In other words, the inverse function is just exp(y).
+const THRESHOLD: f64 = 20f64;
+const LOOP_THR: usize = 1000;
+fn digam_inv_safe(y: f64) -> f64 {
+    if THRESHOLD < y {
+        return y.exp();
+    }
+    let mut guess = if -2.22 < y {
+        y.exp() + 0.5
+    } else {
+        -(y - DIGAM_ONE).recip()
+    };
+    for t in 0.. {
+        let prev = guess;
+        guess -= (digamma(guess) - y) / trigamma(guess);
+        if (prev - guess).powi(2) < SMALL_VAL {
+            break;
+        }
+        if LOOP_THR < t {
+            return y.exp();
+        }
+    }
+    guess
+}
+
 /// digamma(1)
 pub const DIGAM_ONE: f64 = -0.5772156649015328606065;
 // Return inverse of digamma function.
@@ -689,11 +715,14 @@ pub fn digam_inv(y: f64) -> f64 {
     } else {
         -(y - DIGAM_ONE).recip()
     };
-    loop {
+    for t in 0.. {
         let prev = guess;
         guess -= (digamma(guess) - y) / trigamma(guess);
         if (prev - guess).powi(2) < SMALL_VAL {
             break;
+        }
+        if t > 1_000_000 {
+            panic!("{}", y);
         }
     }
     guess
